@@ -120,5 +120,16 @@ service cloud.firestore {
       allow read: if isOwner(userId) || isAdmin();
       allow write: if isAdmin();
     }
+
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /registrations/{regId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
   }
 }

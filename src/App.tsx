@@ -28,7 +28,8 @@ import {
   ArrowRight,
   CheckCircle2,
   ShieldCheck,
-  Edit2
+  Edit2,
+  Delete
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -40,6 +41,7 @@ import {
   deleteDoc, 
   doc, 
   updateDoc,
+  setDoc,
   getDocFromServer,
   Timestamp
 } from 'firebase/firestore';
@@ -168,8 +170,11 @@ export default function App() {
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [totalRoomRent, setTotalRoomRent] = useState<number>(0);
-  const [activeTab, setActiveTab] = useState<'members' | 'purchases' | 'history' | 'calculator'>('members');
+  const [activeTab, setActiveTab] = useState<'members' | 'purchases' | 'history' | 'calculator' | 'approvals'>('members');
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isApproved, setIsApproved] = useState(false);
+  const [registrations, setRegistrations] = useState<any[]>([]);
+  const [pendingReg, setPendingReg] = useState<any>(null);
   
   // Calculator State
   const [calcInput, setCalcInput] = useState('');
@@ -181,24 +186,41 @@ export default function App() {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
       if (u) {
-        // Check if user is admin by email or role
         const isDefaultAdmin = u.email === 'sakeerputhan@gmail.com';
         if (isDefaultAdmin) {
           setIsAdmin(true);
+          setIsApproved(true);
         } else {
-          try {
-            const userDoc = await getDocFromServer(doc(db, 'users', u.uid));
-            if (userDoc.exists() && userDoc.data().role === 'admin') {
-              setIsAdmin(true);
+          // Check user profile for approval and admin status
+          const unsubProfile = onSnapshot(doc(db, 'users', u.uid), (docSnap) => {
+            if (docSnap.exists()) {
+              const data = docSnap.data();
+              setIsAdmin(data.role === 'admin');
+              setIsApproved(data.approved === true);
             } else {
               setIsAdmin(false);
+              setIsApproved(false);
             }
-          } catch (err) {
-            setIsAdmin(false);
-          }
+          });
+          
+          // Check for pending registration
+          const unsubReg = onSnapshot(doc(db, 'registrations', u.uid), (regSnap) => {
+            if (regSnap.exists()) {
+              setPendingReg({ id: regSnap.id, ...regSnap.data() });
+            } else {
+              setPendingReg(null);
+            }
+          });
+
+          return () => {
+            unsubProfile();
+            unsubReg();
+          };
         }
       } else {
         setIsAdmin(false);
+        setIsApproved(false);
+        setPendingReg(null);
       }
       setIsAuthReady(true);
     });
@@ -229,10 +251,26 @@ export default function App() {
       setSummaries(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Summary)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'summaries'));
 
+    const unsubSettings = onSnapshot(doc(db, 'settings', 'global'), (snapshot) => {
+      if (snapshot.exists()) {
+        setTotalRoomRent(snapshot.data().totalRoomRent || 0);
+      }
+    });
+
+    let unsubRegs = () => {};
+    if (isAdmin) {
+      const qRegs = collection(db, 'registrations');
+      unsubRegs = onSnapshot(qRegs, (snapshot) => {
+        setRegistrations(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      });
+    }
+
     return () => {
       unsubMembers();
       unsubPurchases();
       unsubSummaries();
+      unsubSettings();
+      unsubRegs();
     };
   }, [user]);
 
@@ -271,6 +309,16 @@ export default function App() {
       memberDetails
     };
   }, [members, purchases, totalRoomRent]);
+
+  const updateRoomRent = async (val: number) => {
+    setTotalRoomRent(val);
+    if (!isAdmin) return;
+    try {
+      await setDoc(doc(db, 'settings', 'global'), { totalRoomRent: val }, { merge: true });
+    } catch (err) {
+      console.error("Error updating room rent:", err);
+    }
+  };
 
   // Actions
   const addMember = async (name: string, roomRentEnabled: boolean, messBillEnabled: boolean, totalDays: number) => {
@@ -333,6 +381,20 @@ export default function App() {
     }
   };
 
+  const approveUser = async (userId: string, email: string) => {
+    try {
+      await setDoc(doc(db, 'users', userId), {
+        email,
+        approved: true,
+        role: 'user',
+        createdAt: new Date().toISOString()
+      });
+      await deleteDoc(doc(db, 'registrations', userId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'users');
+    }
+  };
+
   const saveSummary = async () => {
     if (!user) return;
     const month = format(new Date(), 'MMMM yyyy');
@@ -368,6 +430,8 @@ export default function App() {
     } else if (val === 'C') {
       setCalcInput('');
       setCalcResult(null);
+    } else if (val === 'B') {
+      setCalcInput(prev => prev.slice(0, -1));
     } else {
       setCalcInput(prev => prev + val);
     }
@@ -471,6 +535,10 @@ export default function App() {
     return <LoginScreen />;
   }
 
+  if (!isApproved) {
+    return <VerificationScreen email={user.email || ''} pendingReg={pendingReg} />;
+  }
+
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-black text-slate-100 font-sans pb-24">
@@ -518,8 +586,8 @@ export default function App() {
                 <span className="text-slate-500 font-bold text-xl">AED</span>
                 <input 
                   type="number" 
-                  value={totalRoomRent} 
-                  onChange={(e) => setTotalRoomRent(Number(e.target.value))}
+                  value={totalRoomRent || ''} 
+                  onChange={(e) => updateRoomRent(Number(e.target.value))}
                   className="w-full font-display font-black text-3xl focus:outline-none bg-transparent placeholder-slate-700 text-white"
                   placeholder="0"
                 />
@@ -533,6 +601,7 @@ export default function App() {
             <TabButton active={activeTab === 'purchases'} onClick={() => setActiveTab('purchases')} icon={<ShoppingBag className="w-4 h-4" />} label="Purchases" />
             <TabButton active={activeTab === 'calculator'} onClick={() => setActiveTab('calculator')} icon={<Calculator className="w-4 h-4" />} label="Calculator" />
             <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} icon={<History className="w-4 h-4" />} label="History" />
+            {isAdmin && <TabButton active={activeTab === 'approvals'} onClick={() => setActiveTab('approvals')} icon={<ShieldCheck className="w-4 h-4" />} label="Approvals" />}
           </div>
 
           {/* Content */}
@@ -642,18 +711,19 @@ export default function App() {
                     <p className="text-white text-5xl font-display font-black tracking-tight">{calcResult !== null ? calcResult : '0'}</p>
                   </div>
                   <div className="grid grid-cols-4 gap-4">
-                    {['7', '8', '9', '/', '4', '5', '6', '*', '1', '2', '3', '-', '0', '.', 'C', '+', '='].map(btn => (
+                    {['7', '8', '9', '/', '4', '5', '6', '*', '1', '2', '3', '-', '0', '.', 'C', 'B', '+', '='].map(btn => (
                       <button
                         key={btn}
                         onClick={() => handleCalc(btn)}
                         className={cn(
-                          "h-16 rounded-2xl font-display font-bold text-xl transition-all active:scale-90",
+                          "h-16 rounded-2xl font-display font-bold text-xl transition-all active:scale-90 flex items-center justify-center",
                           btn === '=' ? "col-span-2 bg-indigo-600 text-white shadow-lg shadow-indigo-500/20" : 
                           ['/', '*', '-', '+'].includes(btn) ? "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20" :
-                          btn === 'C' ? "bg-red-500/10 text-red-400 border border-red-500/20" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                          btn === 'C' ? "bg-red-500/10 text-red-400 border border-red-500/20" : 
+                          btn === 'B' ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
                         )}
                       >
-                        {btn}
+                        {btn === 'B' ? <Delete className="w-6 h-6" /> : btn}
                       </button>
                     ))}
                   </div>
@@ -752,6 +822,50 @@ export default function App() {
                     <div className="bg-slate-900/50 py-24 rounded-4xl border border-dashed border-slate-800 flex flex-col items-center gap-4 opacity-30">
                       <History className="w-16 h-16 text-slate-500" />
                       <p className="font-display font-bold text-lg uppercase tracking-[0.3em] text-slate-500">No history found</p>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'approvals' && isAdmin && (
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-6"
+              >
+                <div className="flex items-center justify-between mb-8">
+                  <h2 className="text-3xl font-display font-black text-white tracking-tight">Pending Approvals</h2>
+                  <div className="px-4 py-2 bg-indigo-600/20 text-indigo-400 rounded-full text-xs font-bold uppercase tracking-widest border border-indigo-500/20">
+                    {registrations.length} Pending
+                  </div>
+                </div>
+
+                <div className="grid gap-4">
+                  {registrations.map(reg => (
+                    <div key={reg.id} className="bg-slate-900 p-6 rounded-3xl border border-slate-800 flex items-center justify-between group hover:border-slate-700 transition-all">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 bg-slate-800 rounded-2xl flex items-center justify-center text-slate-500 group-hover:text-indigo-400 transition-colors">
+                          <UserIcon className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <p className="text-white font-bold">{reg.email}</p>
+                          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Awaiting Approval</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => approveUser(reg.id, reg.email)}
+                        className="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-2xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-900/20"
+                      >
+                        <CheckCircle2 className="w-5 h-5" />
+                        Approve
+                      </button>
+                    </div>
+                  ))}
+                  {registrations.length === 0 && (
+                    <div className="bg-slate-900/50 py-24 rounded-4xl border border-dashed border-slate-800 flex flex-col items-center gap-4 opacity-30">
+                      <ShieldCheck className="w-16 h-16 text-slate-500" />
+                      <p className="font-display font-bold text-lg uppercase tracking-[0.3em] text-slate-500">No pending approvals</p>
                     </div>
                   )}
                 </div>
@@ -1030,6 +1144,8 @@ const AddPurchaseForm: React.FC<{ members: Member[], onAdd: (desc: string, amt: 
       }
     } else if (val === 'C') {
       setMiniCalcInput('');
+    } else if (val === 'B') {
+      setMiniCalcInput(prev => prev.slice(0, -1));
     } else {
       setMiniCalcInput(prev => prev + val);
     }
@@ -1068,18 +1184,19 @@ const AddPurchaseForm: React.FC<{ members: Member[], onAdd: (desc: string, amt: 
               {miniCalcInput || '0'}
             </div>
             <div className="grid grid-cols-4 gap-2">
-              {['7', '8', '9', '/', '4', '5', '6', '*', '1', '2', '3', '-', '0', '.', 'C', '+', '='].map(btn => (
+              {['7', '8', '9', '/', '4', '5', '6', '*', '1', '2', '3', '-', '0', '.', 'C', 'B', '+', '='].map(btn => (
                 <button
                   key={btn}
                   onClick={() => handleMiniCalc(btn)}
                   className={cn(
-                    "h-10 rounded-lg font-bold text-sm transition-all active:scale-90",
+                    "h-10 rounded-lg font-bold text-sm transition-all active:scale-90 flex items-center justify-center",
                     btn === '=' ? "col-span-2 bg-indigo-600 text-white" : 
                     ['/', '*', '-', '+'].includes(btn) ? "bg-indigo-500/20 text-indigo-400" :
-                    btn === 'C' ? "bg-red-500/20 text-red-400" : "bg-slate-700 text-slate-300"
+                    btn === 'C' ? "bg-red-500/20 text-red-400" : 
+                    btn === 'B' ? "bg-amber-500/20 text-amber-400" : "bg-slate-700 text-slate-300"
                   )}
                 >
-                  {btn}
+                  {btn === 'B' ? <Delete className="w-4 h-4" /> : btn}
                 </button>
               ))}
             </div>
@@ -1146,6 +1263,50 @@ const AddPurchaseForm: React.FC<{ members: Member[], onAdd: (desc: string, amt: 
   );
 }
 
+const VerificationScreen: React.FC<{ email: string, pendingReg: any }> = ({ email }) => {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center p-6 relative overflow-hidden">
+      <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-600/10 blur-[120px] rounded-full" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-600/10 blur-[120px] rounded-full" />
+      </div>
+
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-md bg-slate-900/50 backdrop-blur-2xl p-10 rounded-[2.5rem] border border-slate-800 shadow-2xl relative z-10 text-center"
+      >
+        <div className="w-20 h-20 bg-amber-500/20 rounded-3xl flex items-center justify-center mx-auto mb-8 border border-amber-500/20">
+          <ShieldCheck className="w-10 h-10 text-amber-500" />
+        </div>
+        <h1 className="text-3xl font-display font-black text-white tracking-tight mb-4">Account Pending</h1>
+        <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+          Your account <span className="text-white font-bold">{email}</span> is awaiting approval. 
+          Please wait for the <span className="text-indigo-400 font-bold">Admin</span> to approve your registration. 
+          You will be granted access automatically once approved.
+        </p>
+
+        <div className="space-y-6">
+          <div className="p-6 bg-indigo-600/10 border border-indigo-500/20 rounded-3xl">
+            <div className="flex items-center justify-center gap-3 text-indigo-400 mb-2">
+              <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
+              <span className="text-xs font-bold uppercase tracking-widest">Waiting for Admin</span>
+            </div>
+            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-tighter">This screen will update automatically</p>
+          </div>
+
+          <button 
+            onClick={() => auth.signOut()}
+            className="w-full bg-slate-800 text-slate-400 py-4 rounded-2xl font-bold hover:bg-slate-700 transition-all"
+          >
+            Sign Out
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
 const LoginScreen: React.FC = () => {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
@@ -1161,7 +1322,11 @@ const LoginScreen: React.FC = () => {
 
     try {
       if (isSignUp) {
-        await createUserWithEmailAndPassword(auth, email, password);
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        await setDoc(doc(db, 'registrations', userCredential.user.uid), {
+          email,
+          createdAt: new Date().toISOString()
+        });
       } else {
         await signInWithEmailAndPassword(auth, email, password);
       }
