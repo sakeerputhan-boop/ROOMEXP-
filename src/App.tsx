@@ -169,18 +169,37 @@ export default function App() {
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [totalRoomRent, setTotalRoomRent] = useState<number>(0);
   const [activeTab, setActiveTab] = useState<'members' | 'purchases' | 'history' | 'calculator'>('members');
+  const [isAdmin, setIsAdmin] = useState(false);
   
   // Calculator State
   const [calcInput, setCalcInput] = useState('');
   const [calcHistory, setCalcHistory] = useState<string[]>([]);
   const [calcResult, setCalcResult] = useState<number | null>(null);
 
-  const isAdmin = true;
-
   // Auth Listener
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
+      if (u) {
+        // Check if user is admin by email or role
+        const isDefaultAdmin = u.email === 'sakeerputhan@gmail.com';
+        if (isDefaultAdmin) {
+          setIsAdmin(true);
+        } else {
+          try {
+            const userDoc = await getDocFromServer(doc(db, 'users', u.uid));
+            if (userDoc.exists() && userDoc.data().role === 'admin') {
+              setIsAdmin(true);
+            } else {
+              setIsAdmin(false);
+            }
+          } catch (err) {
+            setIsAdmin(false);
+          }
+        }
+      } else {
+        setIsAdmin(false);
+      }
       setIsAuthReady(true);
     });
     return () => unsub();
@@ -195,17 +214,17 @@ export default function App() {
       return;
     }
 
-    const qMembers = query(collection(db, 'members'), where('uid', '==', user.uid));
+    const qMembers = collection(db, 'members');
     const unsubMembers = onSnapshot(qMembers, (snapshot) => {
       setMembers(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Member)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'members'));
 
-    const qPurchases = query(collection(db, 'purchases'), where('uid', '==', user.uid));
+    const qPurchases = collection(db, 'purchases');
     const unsubPurchases = onSnapshot(qPurchases, (snapshot) => {
       setPurchases(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Purchase)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'purchases'));
 
-    const qSummaries = query(collection(db, 'summaries'), where('uid', '==', user.uid));
+    const qSummaries = collection(db, 'summaries');
     const unsubSummaries = onSnapshot(qSummaries, (snapshot) => {
       setSummaries(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Summary)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'summaries'));

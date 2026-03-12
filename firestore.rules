@@ -96,24 +96,24 @@ service cloud.firestore {
     // ===============================================================
 
     match /members/{memberId} {
-      allow read: if isDocOwner();
-      allow create: if isAuthenticated() && isValidMember(request.resource.data) && uidUnchanged();
-      allow update: if isDocOwner() && isValidMember(request.resource.data) && uidNotModified();
-      allow delete: if isDocOwner();
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidMember(request.resource.data) && uidUnchanged();
+      allow update: if isAdmin() && isValidMember(request.resource.data) && uidNotModified();
+      allow delete: if isAdmin();
     }
 
     match /purchases/{purchaseId} {
-      allow read: if isDocOwner();
+      allow read: if isAuthenticated();
       allow create: if isAuthenticated() && isValidPurchase(request.resource.data) && uidUnchanged();
-      allow update: if isDocOwner() && isValidPurchase(request.resource.data) && uidNotModified();
-      allow delete: if isDocOwner();
+      allow update: if isAdmin() && isValidPurchase(request.resource.data) && uidNotModified();
+      allow delete: if isAdmin();
     }
 
     match /summaries/{summaryId} {
-      allow read: if isDocOwner();
-      allow create: if isAuthenticated() && isValidSummary(request.resource.data) && uidUnchanged();
-      allow update: if isDocOwner() && isValidSummary(request.resource.data) && uidNotModified();
-      allow delete: if isDocOwner();
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidSummary(request.resource.data) && uidUnchanged();
+      allow update: if isAdmin() && isValidSummary(request.resource.data) && uidNotModified();
+      allow delete: if isAdmin();
     }
 
     match /users/{userId} {
